@@ -140,7 +140,7 @@ async function main() {
   console.log("=".repeat(60));
   console.log();
 
-  const result = await session.forge.run(opts.task, opts.maxTurns);
+  const result = await session.run(opts.task, opts.maxTurns);
 
   session.save();
   console.log();

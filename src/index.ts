@@ -42,13 +42,30 @@ export {
   findAgentsMd,
   loadAgentsMd,
   agentsMdSection,
+  agentsMdUserInstructions,
 } from "./agents-md.js";
 export type { AgentsMdDoc, AgentsMdOptions } from "./agents-md.js";
+export {
+  ENVIRONMENT_CONTEXT_OPEN,
+  ENVIRONMENT_CONTEXT_CLOSE,
+  captureEnvironment,
+  renderEnvironmentContext,
+  environmentSnapshotEqual,
+  parseEnvironmentSnapshot,
+} from "./environment-context.js";
+export type { EnvironmentSnapshot } from "./environment-context.js";
+export {
+  TurnContext,
+  AGENTS_MD_INSTRUCTIONS_MARKER,
+} from "./turn-context.js";
+export type { TurnContextOptions, TurnContextState } from "./turn-context.js";
+export { AGENTS_MD_SCOPE_NOTE } from "./system.js";
 export {
   AgentSession,
   TRAJECTORY_DIR,
   createTrajectoryPath,
   trajectoryLabel,
+  defaultTools,
 } from "./agent-session.js";
 export type { OpenAgentSessionOptions } from "./agent-session.js";
 export { codingAgentSystem } from "./system.js";

@@ -74,7 +74,21 @@ global 仍默认关；开启后采用 ds-forge 自己的统一 `~/.agents` 约�
 
 仍**刻意不做**：global 默认开（越界读他人配置）、fallback 文件名（`CLAUDE.md` 等，scope creep）。
 
-## 六、验证
+## 六·补 TurnContext + environment_context（2026-06-25，Codex 对齐）
+
+| 模块 | 职责 |
+|------|------|
+| `environment-context.ts` | `<environment_context>`：cwd、shell、date、timezone |
+| `turn-context.ts` | 首轮 AGENTS.md + env；稳态仅 env diff；resume 从 history 恢复 baseline |
+| `system.ts` | `AGENTS_MD_SCOPE_NOTE`（agentsMd 开时）；cwd 移出 system |
+| `AgentSession.run` / `runStream` | 每轮 `prepareUserTurn` 再调 Forge |
+
+- cwd 不变 → 不重发 env；cwd 变 → **追加** env diff（不重建前缀）
+- AGENTS.md session 首轮注入，cwd 变更不重读（同 Codex）
+- `clear()` 重置 TurnContext，下轮重新注入首轮 prefix
+- TUI 改走 `session.runStream`
+
+## 七、验证
 
 `examples/agents_md_test.ts`，15 用例：默认零 scope、空/缺失、git 边界向上走、无 git 不乱爬、空文件跳过、
 section 格式与优先级、`AGENTS.override.md` 每目录优先、global `~/.agents` + override、32KiB 截断、

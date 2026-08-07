@@ -3,8 +3,8 @@
  * / Linux Foundation) for project-specific agent instructions.
  *
  * Unlike skills (on-demand capability packs loaded via a tool), AGENTS.md is
- * persistent project memory: discovered from disk and injected into the system
- * prompt. It is plain markdown with no required schema.
+ * persistent project memory: discovered from disk and injected into the first
+ * turn's contextual user prefix. It is plain markdown with no required schema.
  *
  * Discovery follows ds-forge's agent guidance behaviour:
  *  - Per directory, `AGENTS.override.md` wins over `AGENTS.md` (first non-empty).
@@ -134,10 +134,21 @@ function truncateBytes(s: string, maxBytes: number): { text: string; truncated: 
   return { text: buf.subarray(0, end).toString("utf-8"), truncated: true };
 }
 
+function formatAgentsDocBlocks(docs: AgentsMdDoc[], cwd?: string): string {
+  const base = resolve(cwd ?? process.cwd());
+  return docs
+    .map((d) => {
+      const rel = relative(base, d.path);
+      const label = !rel || rel.startsWith("..") ? d.path : rel;
+      return `<!-- ${label} -->\n${d.content}`;
+    })
+    .join("\n\n");
+}
+
 /**
  * Format discovered docs as a system-prompt section (empty string if none).
- * The combined output is capped at `maxBytes` (default 32 KiB); when exceeded,
- * the tail (nearest, last-appended doc) is truncated — matching Codex.
+ * Prefer `agentsMdUserInstructions` for new integrations — Codex injects via
+ * contextual user messages, not system.
  */
 export function agentsMdSection(
   docs: AgentsMdDoc[],
@@ -145,23 +156,40 @@ export function agentsMdSection(
   maxBytes: number = DEFAULT_AGENTS_MD_MAX_BYTES,
 ): string {
   if (docs.length === 0) return "";
-  const base = resolve(cwd ?? process.cwd());
-  const blocks = docs.map((d) => {
-    const rel = relative(base, d.path);
-    const label = !rel || rel.startsWith("..") ? d.path : rel;
-    return `<!-- ${label} -->\n${d.content}`;
-  });
-
   const header = `## Project instructions (AGENTS.md)
 
 Project-specific guidance loaded from AGENTS.md. Follow it unless the user's request overrides it. More specific (nearer) instructions appear later and take precedence.
 
 `;
-  const { text, truncated } = truncateBytes(header + blocks.join("\n\n"), maxBytes);
+  const { text, truncated } = truncateBytes(
+    header + formatAgentsDocBlocks(docs, cwd),
+    maxBytes,
+  );
   return truncated ? `${text}\n\n<!-- [truncated at ${maxBytes} bytes] -->` : text;
 }
 
-/** Discover + format in one call. Returns "" when no AGENTS.md is found. */
+/**
+ * Codex-style contextual user block for AGENTS.md (session-scoped, first turn).
+ * Returns "" when no docs are found or no scope is enabled.
+ */
+export function agentsMdUserInstructions(opts: AgentsMdOptions = {}): string {
+  const cwd = resolve(opts.cwd ?? process.cwd());
+  const docs = findAgentsMd(opts);
+  if (docs.length === 0) return "";
+  const maxBytes = opts.maxBytes ?? DEFAULT_AGENTS_MD_MAX_BYTES;
+  const { text, truncated } = truncateBytes(
+    formatAgentsDocBlocks(docs, cwd),
+    maxBytes,
+  );
+  const body = truncated ? `${text}\n\n<!-- [truncated at ${maxBytes} bytes] -->` : text;
+  return `# AGENTS.md instructions for ${cwd}
+
+<INSTRUCTIONS>
+${body}
+</INSTRUCTIONS>`;
+}
+
+/** Discover + format as a legacy system section. Returns "" when none found. */
 export function loadAgentsMd(opts: AgentsMdOptions = {}): string {
   return agentsMdSection(findAgentsMd(opts), opts.cwd, opts.maxBytes);
 }

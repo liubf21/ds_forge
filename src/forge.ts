@@ -10,9 +10,9 @@ import {
   buildModelExtra,
   resolveReasoningEffort,
 } from "./defaults.js";
-import { loadAgentsMd } from "./agents-md.js";
 import { Session } from "./session.js";
 import { SkillRegistry, skillTool, skillsCatalog, toSkillRegistry } from "./skills.js";
+import { TurnContext } from "./turn-context.js";
 import { ToolRegistry } from "./tools.js";
 import { parseUsage, parseUsageLog, type UsageRecord } from "./usage.js";
 import type {
@@ -96,16 +96,27 @@ export class Forge {
     this.context.maxTokens = this._maxTokens;
 
     const catalog = this.skills ? skillsCatalog(this.skills) : "";
-    const agents = config.agentsMd
-      ? loadAgentsMd(
-          config.agentsMd === true
-            ? { includeProject: true }
-            : config.agentsMd,
-        )
-      : "";
-    const system = [config.system, agents, catalog].filter(Boolean).join("\n\n");
+    const system = [config.system, catalog].filter(Boolean).join("\n\n");
     if (system) {
       this.context.addSystem(system);
+    }
+
+    if (config.turnContext) {
+      this._turnContext = config.turnContext;
+    } else if (config.agentsMd || config.environmentContext) {
+      this._turnContext = new TurnContext({
+        agentsMd: config.agentsMd,
+        includeEnvironment: config.environmentContext === true,
+      });
+    }
+  }
+
+  private readonly _turnContext?: TurnContext;
+
+  private _injectTurnPrefix(cwd?: string): void {
+    if (!this._turnContext) return;
+    for (const prefix of this._turnContext.prefixForTurn(cwd)) {
+      this.context.addUser(prefix);
     }
   }
 
@@ -197,6 +208,7 @@ export class Forge {
   // ── single turn ──────────────────────────────────────────
 
   async chat(message: string, extra?: Record<string, unknown>): Promise<string> {
+    this._injectTurnPrefix();
     this.context.addUser(message);
     const toolCalls = await this._step(extra);
     return toolCalls
@@ -212,6 +224,7 @@ export class Forge {
     extra?: Record<string, unknown>,
   ): Promise<string> {
     if (message) {
+      this._injectTurnPrefix();
       this.context.addUser(message);
     }
 
@@ -340,6 +353,7 @@ export class Forge {
     signal?: AbortSignal,
   ): AsyncGenerator<StreamEvent> {
     if (message) {
+      this._injectTurnPrefix();
       this.context.addUser(message);
     }
 

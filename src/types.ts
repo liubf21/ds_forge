@@ -2,6 +2,7 @@
 
 import type { AgentsMdOptions } from "./agents-md.js";
 import type { SkillRegistry } from "./skills.js";
+import type { TurnContext } from "./turn-context.js";
 
 export interface JsonSchema {
   type: string;
@@ -70,11 +71,17 @@ export interface ForgeConfig {
    */
   skills?: SkillRegistry | string[];
   /**
-   * Load AGENTS.md project instructions into the system prompt. `true` uses
-   * project scope; pass options to select exact project/global scopes.
-   * Default: off — a plain library shouldn't read disk unasked.
+   * Load AGENTS.md into the first-turn contextual prefix. `true` uses project
+   * scope. Default: off.
    */
   agentsMd?: boolean | AgentsMdOptions;
+  /**
+   * Inject `<environment_context>` on turn 1 and when cwd/shell/date/timezone
+   * change. Default: off for bare `Forge`; `AgentSession` enables by default.
+   */
+  environmentContext?: boolean;
+  /** Advanced: inject an existing TurnContext (e.g. shared with AgentSession). */
+  turnContext?: TurnContext;
 }
 
 export interface ForgeLoadConfig {

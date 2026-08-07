@@ -14,6 +14,7 @@ import { join } from "node:path";
 import {
   AgentSession,
   Forge,
+  TurnContext,
   agentsMdSection,
   findAgentsMd,
   loadAgentsMd,
@@ -155,7 +156,7 @@ async function main() {
     assert.ok(text.includes("Root"));
   });
 
-  await check("Forge: agentsMd injects into system, default off", () => {
+  await check("Forge: agentsMd injects on first run, default off", () => {
     const { api } = repoFixture();
 
     const off = new Forge({ apiKey: "k", system: "BASE" });
@@ -168,11 +169,24 @@ async function main() {
       apiKey: "k",
       system: "BASE",
       agentsMd: { cwd: api, includeProject: true },
+      environmentContext: true,
     });
     const sys = on.context.messages.find((m) => m.role === "system")?.content ?? "";
     assert.ok(sys.startsWith("BASE"));
-    assert.ok(sys.includes("Fastify"));
-    assert.ok(sys.includes("## Project instructions (AGENTS.md)"));
+    assert.ok(!sys.includes("Fastify"), "AGENTS.md not in system");
+
+    // Mock-less: inject prefix via the same path run() uses
+    for (const prefix of new TurnContext({
+      cwd: api,
+      agentsMd: { cwd: api, includeProject: true },
+      includeEnvironment: true,
+    }).prefixForTurn(api)) {
+      on.context.addUser(prefix);
+    }
+    const user = on.context.messages.find((m) => m.role === "user")?.content ?? "";
+    assert.ok(user.includes("Fastify"));
+    assert.ok(user.includes("# AGENTS.md instructions"));
+    assert.ok(user.includes("<environment_context>"));
   });
 
   await check("AgentSession: agentsMd:true loads project and survives clear()", () => {
@@ -185,12 +199,23 @@ async function main() {
     });
     const sys1 = session.forge.context.messages.find((m) => m.role === "system");
     assert.ok(sys1?.content?.includes("CODER"));
-    assert.ok(sys1?.content?.includes("Fastify"));
+    assert.ok(sys1?.content?.includes("# AGENTS.md scope"));
+    assert.ok(!sys1?.content?.includes("Fastify"), "AGENTS body not in system");
 
-    // clear() must restore the AGENTS.md-augmented system, not just the base.
+    session.prepareUserTurn("go");
+    const prefix = session.forge.context.messages.find(
+      (m) => m.role === "user" && m.content?.includes("Fastify"),
+    );
+    assert.ok(prefix, "AGENTS.md in first-turn user prefix");
+
     session.clear();
     const sys2 = session.forge.context.messages.find((m) => m.role === "system");
-    assert.ok(sys2?.content?.includes("Fastify"), "AGENTS.md survives clear()");
+    assert.ok(sys2?.content?.includes("# AGENTS.md scope"), "scope note survives clear()");
+    session.prepareUserTurn("again");
+    const prefix2 = session.forge.context.messages.find(
+      (m) => m.role === "user" && m.content?.includes("Fastify"),
+    );
+    assert.ok(prefix2, "AGENTS.md re-injected after clear on first turn");
     void repo;
   });
 
@@ -211,8 +236,13 @@ async function main() {
         agentsMd: { global: true, includeProject: false },
       });
       const sys = session.forge.context.messages.find((m) => m.role === "system");
-      assert.ok(sys?.content?.includes("GLOBAL-AGENTS-RULE"), "global loaded");
-      assert.ok(!sys?.content?.includes("REPO-RULE"), "project not loaded");
+      assert.ok(sys?.content?.includes("CODER"));
+      session.prepareUserTurn("go");
+      const prefix = session.forge.context.messages.find(
+        (m) => m.role === "user" && m.content?.includes("GLOBAL-AGENTS-RULE"),
+      );
+      assert.ok(prefix, "global loaded in user prefix");
+      assert.ok(!prefix?.content?.includes("REPO-RULE"), "project not loaded");
     } finally {
       if (prev === undefined) delete process.env.DS_FORGE_AGENTS_HOME;
       else process.env.DS_FORGE_AGENTS_HOME = prev;
