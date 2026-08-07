@@ -9,6 +9,9 @@ import { applyEvent } from "./display.js";
 import { historyFromContext } from "./history.js";
 import type { LiveTurn } from "./types.js";
 
+/** Merge rapid stream deltas so Ink doesn't erase/repaint every token. */
+const LIVE_UPDATE_MS = 50;
+
 interface Props {
   session: AgentSession;
   maxTurns: number;
@@ -420,6 +423,32 @@ export default function App({ session, maxTurns }: Props) {
   const busyRef = useRef(false);
   const abortCtrlRef = useRef<AbortController | null>(null);
   const lastInputRef = useRef("");
+  const pendingLiveRef = useRef<LiveTurn | null>(null);
+  const liveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flushLive = useCallback(() => {
+    if (liveTimerRef.current) {
+      clearTimeout(liveTimerRef.current);
+      liveTimerRef.current = null;
+    }
+    const turn = pendingLiveRef.current;
+    if (turn) {
+      pendingLiveRef.current = null;
+      dispatch({ type: "live_update", turn });
+    }
+  }, []);
+
+  const scheduleLive = useCallback(
+    (turn: LiveTurn) => {
+      pendingLiveRef.current = turn;
+      if (liveTimerRef.current) return;
+      liveTimerRef.current = setTimeout(() => {
+        liveTimerRef.current = null;
+        flushLive();
+      }, LIVE_UPDATE_MS);
+    },
+    [flushLive],
+  );
 
   const persist = useCallback(() => {
     try {
@@ -434,7 +463,10 @@ export default function App({ session, maxTurns }: Props) {
     exit();
   }, [persist, exit]);
 
-  useEffect(() => () => persist(), [persist]);
+  useEffect(() => () => {
+    if (liveTimerRef.current) clearTimeout(liveTimerRef.current);
+    persist();
+  }, [persist]);
 
   const submit = useCallback(
     async (raw: string) => {
@@ -449,6 +481,11 @@ export default function App({ session, maxTurns }: Props) {
       if (text === "/clear") {
         const newPath = sessionRef.current.clear();
         setTrajLabel(trajectoryLabel(newPath));
+        pendingLiveRef.current = null;
+        if (liveTimerRef.current) {
+          clearTimeout(liveTimerRef.current);
+          liveTimerRef.current = null;
+        }
         dispatch({ type: "reset" });
         setShowAll(false);
         setStatus(`cleared · ${trajectoryLabel(newPath)}`);
@@ -463,6 +500,7 @@ export default function App({ session, maxTurns }: Props) {
 
       const { forge } = sessionRef.current;
       const snapshot = forge.context.snapshot();
+      const turnSnapshot = sessionRef.current.snapshotTurnContext();
       const ctrl = new AbortController();
       abortCtrlRef.current = ctrl;
       busyRef.current = true;
@@ -473,11 +511,16 @@ export default function App({ session, maxTurns }: Props) {
       setInput("");
 
       let turn: LiveTurn = { content: "", tools: [] };
+      pendingLiveRef.current = null;
+      if (liveTimerRef.current) {
+        clearTimeout(liveTimerRef.current);
+        liveTimerRef.current = null;
+      }
       dispatch({ type: "live_update", turn });
 
       try {
         let completed = false;
-        for await (const ev of forge.runStream(text, maxTurns, undefined, ctrl.signal)) {
+        for await (const ev of sessionRef.current.runStream(text, maxTurns, undefined, ctrl.signal)) {
           if (ctrl.signal.aborted) break;
           if (ev.type === "error") {
             setStatus(ev.message);
@@ -489,11 +532,19 @@ export default function App({ session, maxTurns }: Props) {
             break;
           }
           turn = applyEvent(turn, ev);
-          dispatch({ type: "live_update", turn: { ...turn } });
+          // Coalesce text deltas; paint tool boundaries immediately.
+          if (ev.type === "text_delta") {
+            scheduleLive({ ...turn });
+          } else {
+            flushLive();
+            dispatch({ type: "live_update", turn: { ...turn } });
+          }
         }
 
+        flushLive();
         if (ctrl.signal.aborted) {
           forge.context.restore(snapshot);
+          sessionRef.current.restoreTurnContext(turnSnapshot);
           dispatch({ type: "undo_last" });
           setInput(lastInputRef.current);
           setStatus("Aborted — input restored");
@@ -510,8 +561,10 @@ export default function App({ session, maxTurns }: Props) {
           dispatch({ type: "live_clear" });
         }
       } catch (e) {
+        flushLive();
         if (ctrl.signal.aborted) {
           forge.context.restore(snapshot);
+          sessionRef.current.restoreTurnContext(turnSnapshot);
           dispatch({ type: "undo_last" });
           setInput(lastInputRef.current);
           setStatus("Aborted — input restored");
@@ -526,7 +579,7 @@ export default function App({ session, maxTurns }: Props) {
         persist();
       }
     },
-    [quit, maxTurns, persist],
+    [quit, maxTurns, persist, scheduleLive, flushLive],
   );
 
   const undo = useCallback(() => {

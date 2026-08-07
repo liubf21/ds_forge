@@ -87,7 +87,7 @@ export function AssistantBubble({
       {(content || streaming) && (
         <Text wrap="wrap">
           {content}
-          {streaming && <Text color="green">▍</Text>}
+          {streaming && <Text color="green">▊</Text>}
         </Text>
       )}
     </Box>

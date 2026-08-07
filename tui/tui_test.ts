@@ -7,7 +7,7 @@
  */
 
 import assert from "node:assert";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { AgentSession } from "../src/agent-session.js";
@@ -346,6 +346,133 @@ function test_agentSession_clear_resets_usage_log() {
   assert.equal(session.forge.usageLog.length, 0);
 }
 
+function test_agentSession_fork_new_trajectory() {
+  const trajDir = mkdtempSync(join(tmpdir(), "ds-forge-fork-"));
+  const prev = process.env.DS_FORGE_DIR;
+  process.env.DS_FORGE_DIR = trajDir;
+
+  try {
+    const source = join(trajDir, "source.json");
+    writeFileSync(
+      source,
+      JSON.stringify({
+        version: "0.1.0",
+        model: "deepseek-chat",
+        tools: [],
+        messages: [
+          { role: "system", content: "sys" },
+          { role: "user", content: "hi" },
+        ],
+        metadata: {},
+      }),
+    );
+
+    const forked = AgentSession.fork(source, { apiKey: TEST_KEY, cwd: TEST_CWD, tools: [] });
+    assert.notEqual(forked.trajPath, source);
+    assert.equal(forked.forge.context.messages.length, 2);
+
+    forked.forge.context.addAssistant("reply");
+    forked.save();
+
+    const unchanged = JSON.parse(readFileSync(source, "utf-8"));
+    assert.equal(unchanged.messages.length, 2);
+    assert.equal(unchanged.messages[1]?.content, "hi");
+  } finally {
+    if (prev === undefined) delete process.env.DS_FORGE_DIR;
+    else process.env.DS_FORGE_DIR = prev;
+  }
+}
+
+function test_agentSession_turnContext_rollback_reinjects_agents() {
+  const trajDir = mkdtempSync(join(tmpdir(), "ds-forge-tc-rollback-"));
+  const repo = join(trajDir, "repo");
+  mkdirSync(join(repo, ".git"), { recursive: true });
+  writeFileSync(join(repo, "AGENTS.md"), "ROLLBACK-RULE");
+  const prev = process.env.DS_FORGE_DIR;
+  process.env.DS_FORGE_DIR = trajDir;
+
+  try {
+    const session = AgentSession.open({ apiKey: TEST_KEY, cwd: repo, agentsMd: true });
+    const ctxSnap = session.forge.context.snapshot();
+    const tcSnap = session.snapshotTurnContext();
+
+    session.prepareUserTurn("go");
+    assert.ok(
+      session.forge.context.messages.some(
+        (m) => m.role === "user" && m.content?.includes("ROLLBACK-RULE"),
+      ),
+      "first turn carries AGENTS.md",
+    );
+
+    // Simulate an aborted turn: roll back both the context and the standing
+    // prefix state so the next submit re-sends AGENTS.md.
+    session.forge.context.restore(ctxSnap);
+    session.restoreTurnContext(tcSnap);
+
+    session.prepareUserTurn("again");
+    const prefix = session.forge.context.messages.find(
+      (m) => m.role === "user" && m.content?.includes("ROLLBACK-RULE"),
+    );
+    assert.ok(prefix, "AGENTS.md re-injected after abort rollback");
+  } finally {
+    if (prev === undefined) delete process.env.DS_FORGE_DIR;
+    else process.env.DS_FORGE_DIR = prev;
+  }
+}
+
+function test_agentSession_resume_newly_enabled_agentsMd() {
+  const trajDir = mkdtempSync(join(tmpdir(), "ds-forge-resume-agents-"));
+  const repo = join(trajDir, "repo");
+  mkdirSync(join(repo, ".git"), { recursive: true });
+  writeFileSync(join(repo, "AGENTS.md"), "RESUME-RULE");
+  const prev = process.env.DS_FORGE_DIR;
+  process.env.DS_FORGE_DIR = trajDir;
+
+  try {
+    // Trajectory from a session that ran WITHOUT agentsMd: env prefix only.
+    const source = join(trajDir, "old.json");
+    const envBlock = `<environment_context>\n  <cwd>${repo}</cwd>\n  <shell>sh</shell>\n  <current_date>2026-08-03</current_date>\n  <timezone>Asia/Shanghai</timezone>\n</environment_context>`;
+    writeFileSync(
+      source,
+      JSON.stringify({
+        version: "0.1.0",
+        model: "deepseek-chat",
+        tools: [],
+        messages: [
+          { role: "system", content: "sys" },
+          { role: "user", content: envBlock },
+          { role: "user", content: "hi" },
+        ],
+        metadata: {},
+      }),
+    );
+
+    // Resume with agentsMd newly enabled: AGENTS.md must still be injected.
+    const session = AgentSession.open({
+      apiKey: TEST_KEY,
+      cwd: repo,
+      resume: source,
+      agentsMd: true,
+      tools: [],
+    });
+    session.prepareUserTurn("go");
+    const prefix = session.forge.context.messages.find(
+      (m) => m.role === "user" && m.content?.includes("RESUME-RULE"),
+    );
+    assert.ok(prefix, "AGENTS.md injected after resume with newly-enabled agentsMd");
+
+    // And it must not be sent again on the next turn.
+    session.prepareUserTurn("again");
+    const agentsCount = session.forge.context.messages.filter(
+      (m) => m.role === "user" && m.content?.includes("RESUME-RULE"),
+    ).length;
+    assert.equal(agentsCount, 1, "AGENTS.md not duplicated on steady turns");
+  } finally {
+    if (prev === undefined) delete process.env.DS_FORGE_DIR;
+    else process.env.DS_FORGE_DIR = prev;
+  }
+}
+
 function test_agentSession_resume_system_override() {
   const trajDir = mkdtempSync(join(tmpdir(), "ds-forge-traj-"));
   const prev = process.env.DS_FORGE_DIR;
@@ -378,6 +505,79 @@ function test_agentSession_resume_system_override() {
 
     assert.equal(session.system, "OVERRIDE");
     assert.equal(session.forge.context.messages[0]?.content, "OVERRIDE");
+  } finally {
+    if (prev === undefined) delete process.env.DS_FORGE_DIR;
+    else process.env.DS_FORGE_DIR = prev;
+  }
+}
+
+function test_agentSession_resume_system_syncs_scope_note() {
+  const trajDir = mkdtempSync(join(tmpdir(), "ds-forge-resume-sys-"));
+  const prev = process.env.DS_FORGE_DIR;
+  process.env.DS_FORGE_DIR = trajDir;
+
+  try {
+    // Trajectory whose system prompt predates the scope note.
+    const trajPath = join(trajDir, "t.json");
+    writeFileSync(
+      trajPath,
+      JSON.stringify({
+        version: "0.1.0",
+        model: "deepseek-chat",
+        tools: [],
+        messages: [
+          { role: "system", content: "OLD_SYSTEM" },
+          { role: "user", content: "hi" },
+        ],
+        metadata: {},
+      }),
+    );
+
+    // Override + agentsMd: context system must equal session.system (note in).
+    const withOverride = AgentSession.open({
+      apiKey: TEST_KEY,
+      cwd: TEST_CWD,
+      resume: trajPath,
+      agentsMd: true,
+      system: "OVERRIDE",
+      tools: [],
+    });
+    assert.equal(withOverride.forge.context.messages[0]?.content, withOverride.system);
+    assert.ok(withOverride.system.includes("# AGENTS.md scope"));
+
+    // No override: trajectory system preserved, note still composed in.
+    const noOverride = AgentSession.open({
+      apiKey: TEST_KEY,
+      cwd: TEST_CWD,
+      resume: trajPath,
+      agentsMd: true,
+      tools: [],
+    });
+    assert.ok(noOverride.system.startsWith("OLD_SYSTEM"));
+    assert.ok(noOverride.system.includes("# AGENTS.md scope"));
+    assert.equal(noOverride.forge.context.messages[0]?.content, noOverride.system);
+
+    // System-less trajectory: default coding agent injected, not left empty.
+    const syslessPath = join(trajDir, "no-sys.json");
+    writeFileSync(
+      syslessPath,
+      JSON.stringify({
+        version: "0.1.0",
+        model: "deepseek-chat",
+        tools: [],
+        messages: [{ role: "user", content: "hi" }],
+        metadata: {},
+      }),
+    );
+    const sysless = AgentSession.open({
+      apiKey: TEST_KEY,
+      cwd: TEST_CWD,
+      resume: syslessPath,
+      tools: [],
+    });
+    assert.equal(sysless.forge.context.messages[0]?.role, "system");
+    assert.equal(sysless.forge.context.messages[0]?.content, sysless.system);
+    assert.ok(sysless.system.includes("AI coding agent"));
   } finally {
     if (prev === undefined) delete process.env.DS_FORGE_DIR;
     else process.env.DS_FORGE_DIR = prev;
@@ -574,6 +774,10 @@ async function main() {
   await check("historyFromContext reasoning-only assistant", test_historyFromContext_reasoning_only_assistant)();
   await check("messageFromDict promotes reasoning-only", test_messageFromDict_promotes_reasoning_only)();
   await check("AgentSession resume reasoningEffort", test_agentSession_resume_reasoning_effort)();
+  await check("AgentSession.fork new trajectory", test_agentSession_fork_new_trajectory)();
+  await check("AgentSession turnContext rollback re-injects AGENTS.md", test_agentSession_turnContext_rollback_reinjects_agents)();
+  await check("AgentSession resume newly-enabled agentsMd", test_agentSession_resume_newly_enabled_agentsMd)();
+  await check("AgentSession resume system syncs scope note", test_agentSession_resume_system_syncs_scope_note)();
   await check("AgentSession resume+system override", test_agentSession_resume_system_override)();
   await check("parseUsage cache fields", test_parseUsage_cache_fields)();
   await check("session usage_log round-trip", test_session_usage_log_round_trip)();
