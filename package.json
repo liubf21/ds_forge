@@ -38,6 +38,7 @@
     "test:watch": "vitest",
     "test:legacy": "tsx examples/mcp_test.ts && tsx examples/skills_test.ts && tsx examples/agents_md_test.ts && tsx tui/tui_test.ts",
     "tui": "tsx --env-file-if-exists=.env tui/index.tsx",
+    "sample": "tsx --env-file-if-exists=.env examples/sample.ts",
     "dev": "tsx --env-file-if-exists=.env"
   },
   "dependencies": {

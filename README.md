@@ -360,6 +360,8 @@ npx tsx --env-file-if-exists=.env tui/index.tsx --resume trajectories/task-xxx.j
 
 See also `examples/agent.ts` for a non-interactive CLI with the same persistence model.
 
+**Stability sampling:** `npm run sample -- --n 3 --template divination --model deepseek-v4-pro --effort max "<prompt>"` runs the same prompt N times in parallel (no tools by default). Enable tools with `--tools bash,read,write,edit`. Artifacts: `trajectories/samples/<group-id>/` (`compare.html` for side-by-side view). Fork: `--resume trajectories/task.json --n 3 "<follow-up>"`.
+
 ### Agentic Writing templates
 
 `--template <name>` loads a markdown document and uses it as the **system prompt**, replacing the default coding-agent persona. This turns the TUI into an agent for any role a document can describe — writing, reviewing, research — while keeping bash, skills, and AGENTS.md configured.
